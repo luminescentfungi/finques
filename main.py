@@ -38,6 +38,7 @@ from scrapers import ALL_SCRAPERS
 from config import ENABLED_SCRAPERS
 from requester import send_request
 from notify import notify_new_listings
+from bot import BotState, TelegramBotListener
 
 SCRAPED_FILE = "scraped.txt"
 
@@ -130,25 +131,56 @@ def parse_args() -> argparse.Namespace:
 # Core
 # ---------------------------------------------------------------------------
 
-def run_search(args: argparse.Namespace) -> List[Listing]:
+def run_search(args: argparse.Namespace, state: "BotState | None" = None) -> List[Listing]:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    # When a BotState is active, its values override the CLI args for this iteration
+    if state is not None:
+        with state.lock:
+            state.iteration += 1
+            _max_price     = state.max_price     if state.max_price     is not None else args.max_price
+            _min_price     = state.min_price     if state.min_price     is not None else args.min_price
+            _max_rooms     = state.max_rooms     if state.max_rooms     is not None else args.max_rooms
+            _min_rooms     = state.min_rooms     if state.min_rooms     is not None else args.min_rooms
+            _max_size      = state.max_size      if state.max_size      is not None else args.max_size
+            _min_size      = state.min_size      if state.min_size      is not None else args.min_size
+            _district      = state.district      if state.district      is not None else args.district
+            _property_type = state.property_type
+            _max_pages     = state.max_pages
+            _active_scrapers = (
+                list(state.active_scrapers)
+                if state.active_scrapers is not None else None
+            )
+    else:
+        _max_price     = args.max_price
+        _min_price     = args.min_price
+        _max_rooms     = args.max_rooms
+        _min_rooms     = args.min_rooms
+        _max_size      = args.max_size
+        _min_size      = args.min_size
+        _district      = args.district
+        _property_type = args.property_type
+        _max_pages     = args.max_pages
+        _active_scrapers = None
+
     params = SearchParams(
         city=args.city,
-        district=args.district,
-        min_price=args.min_price,
-        max_price=args.max_price,
-        min_rooms=args.min_rooms,
-        max_rooms=args.max_rooms,
-        min_size=args.min_size,
-        max_size=args.max_size,
-        property_type=args.property_type,
-        max_pages=args.max_pages,
+        district=_district,
+        min_price=_min_price,
+        max_price=_max_price,
+        min_rooms=_min_rooms,
+        max_rooms=_max_rooms,
+        min_size=_min_size,
+        max_size=_max_size,
+        property_type=_property_type,
+        max_pages=_max_pages,
     )
 
     # Determine which scrapers to run
-    if args.scrapers:
+    if _active_scrapers is not None:
+        selected = _active_scrapers
+    elif args.scrapers:
         selected = [s.strip() for s in args.scrapers.split(",")]
     else:
         selected = [name for name, enabled in ENABLED_SCRAPERS.items() if enabled]
@@ -202,6 +234,11 @@ def run_search(args: argparse.Namespace) -> List[Listing]:
     _save_scraped(new_urls)
     if new_urls:
         console.print(f"  [dim]→ {len(new_urls)} URL(s) appended to {SCRAPED_FILE}[/dim]")
+
+    if state is not None:
+        with state.lock:
+            state.last_new_count   = len(new_urls)
+            state.total_new_count += len(new_urls)
 
     return all_results
 
@@ -332,16 +369,68 @@ def main() -> None:
 
     if args.loop:
         import time
+        from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_ALLOWED_USERS
+
+        # Initialise shared state from CLI defaults
+        state = BotState(
+            max_price     = args.max_price,
+            min_price     = args.min_price,
+            max_rooms     = args.max_rooms,
+            min_rooms     = args.min_rooms,
+            max_size      = args.max_size,
+            min_size      = args.min_size,
+            district      = args.district,
+            property_type = args.property_type,
+            max_pages     = args.max_pages,
+            loop_interval = args.loop_interval,
+            all_scrapers  = set(ALL_SCRAPERS.keys()),
+        )
+
+        # Start the Telegram bot listener if credentials are available
+        bot_listener = None
+        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            bot_listener = TelegramBotListener(
+                token       = TELEGRAM_BOT_TOKEN,
+                chat_id     = TELEGRAM_CHAT_ID,
+                state       = state,
+                allowed_ids = TELEGRAM_ALLOWED_USERS,
+            )
+            bot_listener.start()
+            console.print(
+                "[bold green]🤖  Telegram bot listener started[/bold green] "
+                "(send /help in your chat)"
+            )
+        else:
+            console.print(
+                "[yellow]⚠  TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — "
+                "bot listener disabled[/yellow]"
+            )
+
         console.print(
             f"[bold cyan]🔁  Loop mode — polling every {args.loop_interval}s "
             f"(Ctrl+C to stop)[/bold cyan]"
         )
         try:
             while True:
-                run_search(args)
-                time.sleep(args.loop_interval)
+                with state.lock:
+                    _stopped = state.stopped
+                    _paused  = state.paused
+                if _stopped:
+                    console.print("[yellow]🛑  Stop requested via bot.[/yellow]")
+                    break
+                if _paused:
+                    console.print("[dim]⏸  Paused — waiting for /resume …[/dim]")
+                    time.sleep(2)
+                    continue
+                run_search(args, state=state)
+                with state.lock:
+                    _interval = state.loop_interval
+                time.sleep(_interval)
         except KeyboardInterrupt:
             console.print("\n[yellow]Loop stopped.[/yellow]")
+        finally:
+            if bot_listener:
+                bot_listener.stop()
         return
 
     results = run_search(args)

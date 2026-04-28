@@ -73,6 +73,14 @@ _load_dotenv()  # loads .env if present; env vars set externally (CI) take prece
 TELEGRAM_BOT_TOKEN: str = _os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID:   str = _os.getenv("TELEGRAM_CHAT_ID", "")
 
+# Optional whitelist: comma-separated Telegram user IDs that may send commands.
+# Leave empty to allow any user who messages the bot.
+# Example in .env:  TELEGRAM_ALLOWED_USERS=123456789,987654321
+_raw_allowed = _os.getenv("TELEGRAM_ALLOWED_USERS", "")
+TELEGRAM_ALLOWED_USERS: set = {
+    int(uid.strip()) for uid in _raw_allowed.split(",") if uid.strip().isdigit()
+}
+
 # Sound: path to a .wav/.oga file, or leave empty for a system beep
 NOTIFICATION_SOUND: str = _os.getenv("NOTIFICATION_SOUND", "")
 
