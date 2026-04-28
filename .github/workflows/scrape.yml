@@ -1,0 +1,45 @@
+name: scrape
+
+on:
+  schedule:
+    - cron: '0 7-23 * * *'   # every hour, 7am–11pm Madrid time (UTC+2 → 5am-9pm UTC)
+  workflow_dispatch:           # manual trigger from GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Run scraper
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          CONTACT_NAME:        ${{ secrets.CONTACT_NAME }}
+          CONTACT_EMAIL:       ${{ secrets.CONTACT_EMAIL }}
+          CONTACT_PHONE_FULL:  ${{ secrets.CONTACT_PHONE_FULL }}
+          CONTACT_PHONE_LOCAL: ${{ secrets.CONTACT_PHONE_LOCAL }}
+        run: python main.py --max-price 1000 --type any
+
+      - name: Commit updated scraped.txt
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add scraped.txt || true
+          git diff --staged --quiet || git commit -m "chore: update scraped urls [skip ci]"
+          git push
