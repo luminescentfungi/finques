@@ -34,7 +34,7 @@ jobs:
           CONTACT_EMAIL:       ${{ secrets.CONTACT_EMAIL }}
           CONTACT_PHONE_FULL:  ${{ secrets.CONTACT_PHONE_FULL }}
           CONTACT_PHONE_LOCAL: ${{ secrets.CONTACT_PHONE_LOCAL }}
-        run: python main.py --max-price 1000 --type any
+        run: python main.py --max-price 1000 --loop
 
       - name: Commit updated scraped.txt
         run: |
