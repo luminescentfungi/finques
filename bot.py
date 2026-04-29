@@ -414,15 +414,25 @@ class TelegramBotListener(threading.Thread):
     # ------------------------------------------------------------------
     def run(self) -> None:
         logger.info("TelegramBotListener started (long-poll timeout=%ds)", self.poll_timeout)
-        _send(self.token, self.chat_id,
-              "🤖 <b>Finques bot online.</b> Send /help for commands.")
+        try:
+            _send(self.token, self.chat_id,
+                  "🤖 <b>Finques bot online.</b> Send /help for commands.")
+        except Exception:
+            pass  # startup message is best-effort
 
+        consecutive_errors = 0
         while not self._stop_event.is_set():
             try:
                 updates = _get_updates(self.token, self._offset, self.poll_timeout)
+                consecutive_errors = 0  # reset on success
             except Exception as exc:
-                logger.debug("getUpdates error: %s", exc)
-                time.sleep(5)
+                consecutive_errors += 1
+                backoff = min(60, 2 ** consecutive_errors)
+                logger.warning(
+                    "getUpdates error #%d: %s — retrying in %ds",
+                    consecutive_errors, exc, backoff,
+                )
+                time.sleep(backoff)
                 continue
 
             for upd in updates:
@@ -430,7 +440,7 @@ class TelegramBotListener(threading.Thread):
                 try:
                     self._process(upd)
                 except Exception as exc:
-                    logger.debug("Update processing error: %s", exc)
+                    logger.warning("Update processing error: %s", exc)
 
         logger.info("TelegramBotListener stopped.")
 

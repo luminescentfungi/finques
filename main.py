@@ -124,6 +124,10 @@ def parse_args() -> argparse.Namespace:
         "--loop-interval", type=int, default=5, metavar="SECONDS",
         help="Seconds between loop iterations (default: 5, only used with --loop)",
     )
+    p.add_argument(
+        "--max-runtime", type=int, default=0, metavar="MINUTES",
+        help="Exit the loop after this many minutes (0 = run forever, default: 0)",
+    )
     return p.parse_args()
 
 
@@ -217,6 +221,8 @@ def run_search(args: argparse.Namespace, state: "BotState | None" = None) -> Lis
     for scraper in track(active, description="Scraping…", console=console):
         try:
             listings = scraper.search(params)
+            if not isinstance(listings, list):
+                listings = []
             unique = [l for l in listings if l.url not in seen_urls]
             seen_urls.update(l.url for l in unique)
             new_urls.update(l.url for l in unique)
@@ -227,9 +233,15 @@ def run_search(args: argparse.Namespace, state: "BotState | None" = None) -> Lis
                 f"[bold]{len(unique):3d}[/bold] new"
                 + (f"  [dim]({skipped} already seen)[/dim]" if skipped else "")
             )
-            notify_new_listings(unique, scraper.name)
+            try:
+                notify_new_listings(unique, scraper.name)
+            except Exception as notify_exc:
+                logger.warning("Notification error for %s: %s", scraper.name, notify_exc)
+        except KeyboardInterrupt:
+            raise
         except Exception as exc:
             console.print(f"  [red]{scraper.name:25s} ERROR: {exc}[/red]")
+            logger.exception("Scraper %s raised an unhandled exception", scraper.name)
 
     _save_scraped(new_urls)
     if new_urls:
@@ -386,6 +398,12 @@ def main() -> None:
             all_scrapers  = set(ALL_SCRAPERS.keys()),
         )
 
+        # Compute deadline (0 = no limit)
+        deadline: float = (
+            time.monotonic() + args.max_runtime * 60
+            if args.max_runtime > 0 else float("inf")
+        )
+
         # Start the Telegram bot listener if credentials are available
         bot_listener = None
         if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -406,15 +424,27 @@ def main() -> None:
                 "bot listener disabled[/yellow]"
             )
 
+        runtime_msg = (
+            f"{args.max_runtime} min limit"
+            if args.max_runtime > 0 else "no time limit"
+        )
         console.print(
-            f"[bold cyan]🔁  Loop mode — polling every {args.loop_interval}s "
-            f"(Ctrl+C to stop)[/bold cyan]"
+            f"[bold cyan]🔁  Loop mode — polling every {args.loop_interval}s, "
+            f"{runtime_msg} (Ctrl+C to stop)[/bold cyan]"
         )
         try:
             while True:
+                # --- runtime deadline ---
+                if time.monotonic() >= deadline:
+                    console.print(
+                        f"[yellow]⏱  Max runtime ({args.max_runtime} min) reached — exiting cleanly.[/yellow]"
+                    )
+                    break
+
                 with state.lock:
                     _stopped = state.stopped
                     _paused  = state.paused
+
                 if _stopped:
                     console.print("[yellow]🛑  Stop requested via bot.[/yellow]")
                     break
@@ -422,10 +452,30 @@ def main() -> None:
                     console.print("[dim]⏸  Paused — waiting for /resume …[/dim]")
                     time.sleep(2)
                     continue
-                run_search(args, state=state)
+
+                # --- robust iteration: never let a crash kill the loop ---
+                try:
+                    run_search(args, state=state)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as iter_exc:
+                    console.print(f"[red]❌  Iteration error (will retry next cycle): {iter_exc}[/red]")
+                    logger.exception("Unhandled error in run_search iteration")
+
                 with state.lock:
                     _interval = state.loop_interval
-                time.sleep(_interval)
+
+                # Sleep in small chunks so we can respect deadline / stop flag
+                slept = 0
+                while slept < _interval:
+                    if time.monotonic() >= deadline:
+                        break
+                    with state.lock:
+                        if state.stopped:
+                            break
+                    time.sleep(min(2, _interval - slept))
+                    slept += 2
+
         except KeyboardInterrupt:
             console.print("\n[yellow]Loop stopped.[/yellow]")
         finally:
