@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import subprocess
 import sys
 from typing import List
 
@@ -60,6 +61,30 @@ def _save_scraped(urls: set) -> None:
         with open(SCRAPED_FILE, "a", encoding="utf-8") as fh:
             for url in new_urls:
                 fh.write(url + "\n")
+
+
+def _git_commit_scraped() -> None:
+    """Stage and push scraped.txt so progress is never lost between runs.
+    Runs silently — errors are logged but never propagate."""
+    try:
+        # Only attempt if we're inside a git repo
+        subprocess.run(["git", "rev-parse", "--git-dir"],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "add", SCRAPED_FILE], check=True, capture_output=True)
+        # Only commit if there is actually something staged
+        diff = subprocess.run(["git", "diff", "--staged", "--quiet"],
+                              capture_output=True)
+        if diff.returncode != 0:  # non-zero means there are staged changes
+            subprocess.run(
+                ["git", "commit", "-m", "chore: update scraped urls [skip ci]"],
+                check=True, capture_output=True,
+            )
+            subprocess.run(["git", "push"], check=True, capture_output=True)
+            console.print("  [dim green]↑  scraped.txt committed & pushed[/dim green]")
+    except subprocess.CalledProcessError as exc:
+        logger.warning("git commit/push failed: %s", exc.stderr.decode(errors='replace').strip())
+    except Exception as exc:
+        logger.warning("_git_commit_scraped unexpected error: %s", exc)
 
 console = Console()
 logging.basicConfig(
@@ -127,6 +152,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--max-runtime", type=int, default=0, metavar="MINUTES",
         help="Exit the loop after this many minutes (0 = run forever, default: 0)",
+    )
+    p.add_argument(
+        "--commit-interval", type=int, default=5, metavar="N",
+        help="Commit scraped.txt to git every N iterations (default: 5, 0 = disabled)",
     )
     return p.parse_args()
 
@@ -461,7 +490,13 @@ def main() -> None:
                 except Exception as iter_exc:
                     console.print(f"[red]❌  Iteration error (will retry next cycle): {iter_exc}[/red]")
                     logger.exception("Unhandled error in run_search iteration")
-
+                # Periodically persist scraped.txt to git so it survives
+                # a force-cancel (GitHub's 6h kill, runner eviction, etc.)
+                if args.commit_interval > 0:
+                    with state.lock:
+                        _iter = state.iteration
+                    if _iter % args.commit_interval == 0:
+                        _git_commit_scraped()
                 with state.lock:
                     _interval = state.loop_interval
 
