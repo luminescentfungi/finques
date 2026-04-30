@@ -57,7 +57,7 @@ jobs:
         # and well inside the 310-min job timeout.
         # scraped.txt is committed to git every --commit-interval iterations
         # from inside Python so progress is never lost on cancellation.
-        run: python main.py --max-price 1000 --loop --loop-interval 30 --max-runtime 280
+        run: python main.py --max-price 1350 --loop --loop-interval 30 --max-runtime 280
 
       - name: Final commit of scraped.txt
         if: always()
