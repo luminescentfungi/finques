@@ -82,7 +82,8 @@ def _git_commit_scraped() -> None:
             subprocess.run(["git", "push"], check=True, capture_output=True)
             console.print("  [dim green]↑  scraped.txt committed & pushed[/dim green]")
     except subprocess.CalledProcessError as exc:
-        logger.warning("git commit/push failed: %s", exc.stderr.decode(errors='replace').strip())
+        stderr_msg = exc.stderr.decode(errors='replace').strip() if exc.stderr else ""
+        logger.warning("git commit/push failed: %s", stderr_msg)
     except Exception as exc:
         logger.warning("_git_commit_scraped unexpected error: %s", exc)
 
@@ -91,6 +92,7 @@ logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
 )
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
